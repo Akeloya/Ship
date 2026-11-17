@@ -1,5 +1,6 @@
 // Arduino UNO R3 / ATmega328P. Wiring and commissioning: ../../README.md
 #include <Arduino.h>
+#include "MotorEnable.h"
 
 const uint8_t ENABLE_BUTTON = 2;  // Joystick SW -> GND when pressed
 const uint8_t STEERING_PIN = A0;
@@ -12,7 +13,6 @@ const bool INVERT_Y = true;
 const bool INVERT_LEFT = false;
 const bool INVERT_RIGHT = false;
 const int MAX_PWM = 100;          // Initial test ceiling; NOT a current limiter
-const uint32_t ARM_MS = 500;
 const uint32_t TICK_MS = 20;
 const uint32_t REVERSE_PAUSE_MS = 300;
 const int RAMP_STEP = 4;
@@ -34,7 +34,7 @@ class Motor {
     analogWrite(en_, 0);
     digitalWrite(in1_, LOW);
     digitalWrite(in2_, LOW);
-    // Keep last direction/time even across release/re-arm.
+    // Keep last direction/time even across stop/re-arm.
   }
   void update(int target, uint32_t now) {
     target = constrain(target, -MAX_PWM, MAX_PWM);
@@ -63,10 +63,7 @@ class Motor {
 
 Motor leftMotor(5, 7, 8, INVERT_LEFT);
 Motor rightMotor(6, 9, 10, INVERT_RIGHT);
-bool armed = false;
-bool neutralTiming = false;
-bool releaseSeen = false;
-uint32_t neutralSince = 0;
+MotorEnable motorEnable;
 uint32_t lastTick = 0;
 uint32_t lastReport = 0;
 
@@ -85,32 +82,24 @@ void setup() {
   pinMode(ENABLE_BUTTON, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
   Serial.begin(115200);
-  Serial.println(F("Release SW, center joystick, then hold SW for 0.5 s."));
+  Serial.println(F("Center + click SW: enable. Next click: latched STOP."));
 }
 
 void loop() {
   const uint32_t now = millis();
   const bool pressed = digitalRead(ENABLE_BUTTON) == LOW;
-  if (!pressed) {
-    releaseSeen = true;
-    armed = false;
-    neutralTiming = false;
+  const int rawX = analogRead(STEERING_PIN);
+  const int rawY = analogRead(THROTTLE_PIN);
+  const int steering = axisValue(rawX, CENTER_X, INVERT_X);
+  const int throttle = axisValue(rawY, CENTER_Y, INVERT_Y);
+  const bool armed = motorEnable.update(pressed, steering == 0 && throttle == 0, now);
+  if (!armed) {
     leftMotor.stop(now);
     rightMotor.stop(now);
     digitalWrite(LED_BUILTIN, LOW);
   }
   if (uint32_t(now - lastTick) < TICK_MS) return;
   lastTick = now;
-  const int rawX = analogRead(STEERING_PIN);
-  const int rawY = analogRead(THROTTLE_PIN);
-  const int steering = axisValue(rawX, CENTER_X, INVERT_X);
-  const int throttle = axisValue(rawY, CENTER_Y, INVERT_Y);
-  if (!armed && pressed && releaseSeen) {
-    if (steering == 0 && throttle == 0) {
-      if (!neutralTiming) { neutralSince = now; neutralTiming = true; }
-      if (uint32_t(now - neutralSince) >= ARM_MS) armed = true;
-    } else neutralTiming = false;
-  }
   if (armed) {
     int left = throttle + steering;
     int right = throttle - steering;
